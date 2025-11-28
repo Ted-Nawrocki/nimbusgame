@@ -1,1 +1,886 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Nimbus vs. The Hallway Pranks</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #222;
+      color: #f5f5f5;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    h1 {
+      margin-top: 16px;
+      margin-bottom: 4px;
+      font-size: 28px;
+    }
+
+    p {
+      margin: 2px 0;
+      font-size: 14px;
+    }
+
+    #gameContainer {
+      margin-top: 12px;
+      border: 4px solid #444;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #111;
+    }
+
+    canvas {
+      display: block;
+      background: #f0f4ff; /* pale school hallway blue */
+    }
+
+    #info {
+      margin-top: 8px;
+      font-size: 14px;
+      text-align: center;
+      line-height: 1.4;
+    }
+
+    .highlight {
+      color: #ffd54f;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <h1>Nimbus vs. The Hallway Pranks</h1>
+  <p>Arrow keys to move, Space/Up to jump. Reach the exit with points &gt; 0.</p>
+
+  <div id="gameContainer">
+    <canvas id="gameCanvas" width="900" height="400"></canvas>
+  </div>
+
+  <div id="info">
+    <p><span class="highlight">Controls:</span> Left/Right arrows to walk, Space or Up arrow to jump, R to restart, M to mute/unmute sounds.</p>
+    <p><span class="highlight">Scoring:</span> +1 for each prank you avoid, −1 for each prank that gets you. School items give +2.</p>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+
+    const WIDTH = canvas.width;
+    const HEIGHT = canvas.height;
+
+    // World configuration
+    const FLOOR_Y = 320;
+    const GRAVITY = 0.8;
+    const FRICTION = 0.8;
+    const MOVE_SPEED = 3.5;
+    const JUMP_FORCE = -13;
+
+    // Level length and exit door
+    const LEVEL_LENGTH = 3200;
+    const EXIT_X = LEVEL_LENGTH - 140;
+
+    // Key state
+    const keys = {
+      left: false,
+      right: false,
+      up: false
+    };
+
+    let muted = false;
+
+    // Sounds (you'll place files in a /sounds folder)
+    const sounds = {
+      jump: loadSound("sounds/jump.mp3"),
+      prankHit: loadSound("sounds/prank_hit.mp3"),
+      prankAvoid: loadSound("sounds/prank_avoid.mp3"),
+      item: loadSound("sounds/item.mp3"),
+      win: loadSound("sounds/win.mp3"),
+      lose: loadSound("sounds/lose.mp3")
+    };
+
+    function loadSound(src) {
+      const audio = new Audio(src);
+      audio.volume = 0.7;
+      return audio;
+    }
+
+    function playSound(name) {
+      if (muted) return;
+      const s = sounds[name];
+      if (!s) return;
+      try {
+        s.currentTime = 0;
+        s.play();
+      } catch (e) {
+        // ignore play errors (browser autoplay rules, etc.)
+      }
+    }
+
+    // Nimbus character
+    const nimbus = {
+      x: 80,
+      y: FLOOR_Y - 60,
+      width: 40,
+      height: 60,
+      vx: 0,
+      vy: 0,
+      onGround: false,
+      canJump: true,
+      slipTimer: 0,
+      score: 0
+    };
+
+    let cameraX = 0;
+    let gameState = "playing"; // "playing" | "won" | "lost"
+
+    let pranksAvoided = 0;
+    let pranksHit = 0;
+    let itemsCollected = 0;
+
+    // Score popups
+    const scorePopups = [];
+
+    // Pranks (ground and lockers and moving backpack)
+    // type: "puddle", "banana", "marbles", "backpack", "locker"
+    const pranks = [
+      {
+        type: "puddle",
+        x: 350,
+        y: FLOOR_Y - 10,
+        width: 80,
+        height: 10,
+        color: "#4fc3f7",
+        label: "Puddle",
+        resolved: false,
+        hit: false,
+        passX: 350 + 80 + 20
+      },
+      {
+        type: "banana",
+        x: 650,
+        y: FLOOR_Y - 10,
+        width: 100,
+        height: 10,
+        color: "#ffeb3b",
+        label: "Banana Peels",
+        resolved: false,
+        hit: false,
+        passX: 650 + 100 + 20
+      },
+      {
+        type: "locker",
+        x: 1000,
+        y: FLOOR_Y - 80,
+        width: 60,
+        height: 80,
+        color: "#e53935",
+        label: "Pie Locker",
+        resolved: false,
+        hit: false,
+        fired: false
+      },
+      {
+        type: "backpack",
+        x: 1400,
+        y: FLOOR_Y - 20,
+        width: 70,
+        height: 20,
+        color: "#5d4037",
+        label: "Backpack",
+        resolved: false,
+        hit: false,
+        vx: 2,
+        minX: 1350,
+        maxX: 1550,
+        passX: 1550 + 50
+      },
+      {
+        type: "marbles",
+        x: 1750,
+        y: FLOOR_Y - 10,
+        width: 90,
+        height: 10,
+        color: "#8e24aa",
+        label: "Marbles",
+        resolved: false,
+        hit: false,
+        passX: 1750 + 90 + 20
+      },
+      {
+        type: "locker",
+        x: 2200,
+        y: FLOOR_Y - 70,
+        width: 60,
+        height: 70,
+        color: "#b71c1c",
+        label: "Super Pie",
+        resolved: false,
+        hit: false,
+        fired: false
+      }
+    ];
+
+    // Pies fired from lockers
+    const pies = [];
+
+    // Paper airplanes as hazards
+    // They move left-right in a range. Collision mostly when Nimbus jumps.
+    const airplanes = [
+      {
+        x: 900,
+        y: FLOOR_Y - 150,
+        width: 28,
+        height: 14,
+        speed: 2,
+        minX: 850,
+        maxX: 1100,
+        dir: 1,
+        resolved: false,
+        hit: false,
+        passX: 1100 + 40
+      },
+      {
+        x: 1800,
+        y: FLOOR_Y - 160,
+        width: 28,
+        height: 14,
+        speed: 2.5,
+        minX: 1750,
+        maxX: 1950,
+        dir: -1,
+        resolved: false,
+        hit: false,
+        passX: 1950 + 40
+      }
+    ];
+
+    // Bonus items
+    const items = [
+      {
+        x: 500,
+        y: FLOOR_Y - 40,
+        width: 30,
+        height: 40,
+        color: "#1e88e5",
+        label: "Bag",
+        collected: false,
+        points: 2
+      },
+      {
+        x: 1200,
+        y: FLOOR_Y - 30,
+        width: 35,
+        height: 30,
+        color: "#43a047",
+        label: "Notebook",
+        collected: false,
+        points: 2
+      },
+      {
+        x: 1600,
+        y: FLOOR_Y - 20,
+        width: 40,
+        height: 20,
+        color: "#fb8c00",
+        label: "Case",
+        collected: false,
+        points: 2
+      },
+      {
+        x: 2000,
+        y: FLOOR_Y - 45,
+        width: 18,
+        height: 45,
+        color: "#00acc1",
+        label: "Bottle",
+        collected: false,
+        points: 2
+      },
+      {
+        x: 2450,
+        y: FLOOR_Y - 40,
+        width: 30,
+        height: 40,
+        color: "#7e57c2",
+        label: "Bag",
+        collected: false,
+        points: 2
+      }
+    ];
+
+    // Input handling
+    window.addEventListener("keydown", (e) => {
+      if (e.code === "ArrowLeft") keys.left = true;
+      if (e.code === "ArrowRight") keys.right = true;
+      if (e.code === "ArrowUp" || e.code === "Space") keys.up = true;
+
+      if (e.code === "KeyR") {
+        resetGame();
+      }
+
+      if (e.code === "KeyM") {
+        muted = !muted;
+      }
+    });
+
+    window.addEventListener("keyup", (e) => {
+      if (e.code === "ArrowLeft") keys.left = false;
+      if (e.code === "ArrowRight") keys.right = false;
+      if (e.code === "ArrowUp" || e.code === "Space") keys.up = false;
+    });
+
+    function resetGame() {
+      nimbus.x = 80;
+      nimbus.y = FLOOR_Y - 60;
+      nimbus.vx = 0;
+      nimbus.vy = 0;
+      nimbus.onGround = false;
+      nimbus.canJump = true;
+      nimbus.slipTimer = 0;
+      nimbus.score = 0;
+
+      cameraX = 0;
+      gameState = "playing";
+
+      pranksAvoided = 0;
+      pranksHit = 0;
+      itemsCollected = 0;
+
+      pranks.forEach((p) => {
+        p.resolved = false;
+        p.hit = false;
+        if (p.type === "locker") {
+          p.fired = false;
+        }
+        if (p.type === "backpack") {
+          p.x = p.minX + (p.maxX - p.minX) / 2;
+          p.vx = Math.abs(p.vx);
+        }
+      });
+
+      airplanes.forEach((a) => {
+        a.resolved = false;
+        a.hit = false;
+      });
+
+      items.forEach((i) => {
+        i.collected = false;
+      });
+
+      pies.length = 0;
+      scorePopups.length = 0;
+    }
+
+    function addScorePopup(text, color) {
+      scorePopups.push({
+        x: nimbus.x + nimbus.width / 2,
+        y: nimbus.y - 10,
+        text: text,
+        color: color,
+        life: 40,
+        vy: -0.7
+      });
+    }
+
+    function spawnPie(lockerPrank) {
+      const pie = {
+        x: lockerPrank.x + lockerPrank.width,
+        y: lockerPrank.y + 25,
+        width: 20,
+        height: 14,
+        vx: 6,
+        vy: 0,
+        active: true,
+        prank: lockerPrank
+      };
+      pies.push(pie);
+    }
+
+    function update() {
+      if (gameState !== "playing") {
+        draw();
+        requestAnimationFrame(update);
+        return;
+      }
+
+      // Horizontal movement
+      if (nimbus.slipTimer > 0) {
+        nimbus.slipTimer--;
+        // During slip, slight uncontrollable slide
+        nimbus.vx = 5;
+        if (nimbus.slipTimer === 0) {
+          nimbus.canJump = true;
+        }
+      } else {
+        if (keys.left) {
+          nimbus.vx = -MOVE_SPEED;
+        } else if (keys.right) {
+          nimbus.vx = MOVE_SPEED;
+        } else {
+          nimbus.vx *= FRICTION;
+          if (Math.abs(nimbus.vx) < 0.1) nimbus.vx = 0;
+        }
+      }
+
+      // Jump
+      if (keys.up && nimbus.onGround && nimbus.canJump) {
+        nimbus.vy = JUMP_FORCE;
+        nimbus.onGround = false;
+        playSound("jump");
+      }
+
+      // Gravity
+      nimbus.vy += GRAVITY;
+
+      // Apply velocity
+      nimbus.x += nimbus.vx;
+      nimbus.y += nimbus.vy;
+
+      // World bounds
+      if (nimbus.x < 0) nimbus.x = 0;
+      if (nimbus.x + nimbus.width > LEVEL_LENGTH) {
+        nimbus.x = LEVEL_LENGTH - nimbus.width;
+      }
+
+      // Floor collision
+      if (nimbus.y + nimbus.height >= FLOOR_Y) {
+        nimbus.y = FLOOR_Y - nimbus.height;
+        nimbus.vy = 0;
+        nimbus.onGround = true;
+      } else {
+        nimbus.onGround = false;
+      }
+
+      // Camera follows Nimbus
+      cameraX = nimbus.x - WIDTH / 3;
+      if (cameraX < 0) cameraX = 0;
+      if (cameraX > LEVEL_LENGTH - WIDTH) {
+        cameraX = LEVEL_LENGTH - WIDTH;
+      }
+
+      // Update moving backpack prank
+      pranks.forEach((p) => {
+        if (p.type === "backpack" && !p.resolved) {
+          p.x += p.vx;
+          if (p.x < p.minX) {
+            p.x = p.minX;
+            p.vx *= -1;
+          } else if (p.x + p.width > p.maxX) {
+            p.x = p.maxX - p.width;
+            p.vx *= -1;
+          }
+        }
+      });
+
+      // Update airplanes
+      airplanes.forEach((a) => {
+        if (a.resolved) return;
+        a.x += a.speed * a.dir;
+        if (a.x < a.minX) {
+          a.x = a.minX;
+          a.dir = 1;
+        } else if (a.x + a.width > a.maxX) {
+          a.x = a.maxX - a.width;
+          a.dir = -1;
+        }
+      });
+
+      // Fire pies from lockers when Nimbus is near
+      pranks.forEach((p) => {
+        if (p.type === "locker" && !p.fired) {
+          if (nimbus.x + nimbus.width > p.x - 100 && nimbus.x < p.x + p.width + 50) {
+            p.fired = true;
+            spawnPie(p);
+          }
+        }
+      });
+
+      // Update pies
+      pies.forEach((pie) => {
+        if (!pie.active) return;
+        pie.x += pie.vx;
+        pie.y += pie.vy;
+
+        // Collision with Nimbus
+        if (rectIntersect(nimbus, pie)) {
+          pie.active = false;
+          if (!pie.prank.resolved) {
+            pie.prank.resolved = true;
+            pie.prank.hit = true;
+            nimbus.score -= 1;
+            pranksHit++;
+            addScorePopup("-1", "#ff5252");
+            playSound("prankHit");
+          }
+        } else {
+          // If the pie has traveled far enough without hitting Nimbus, count as avoided
+          if (!pie.prank.resolved && pie.x > nimbus.x + 200) {
+            pie.active = false;
+            pie.prank.resolved = true;
+            nimbus.score += 1;
+            pranksAvoided++;
+            addScorePopup("+1", "#81c784");
+            playSound("prankAvoid");
+          }
+          // Off-screen fail-safe
+          if (pie.x - cameraX > WIDTH + 300 || pie.x > pie.prank.x + 600) {
+            if (!pie.prank.resolved) {
+              pie.active = false;
+              pie.prank.resolved = true;
+              nimbus.score += 1;
+              pranksAvoided++;
+              addScorePopup("+1", "#81c784");
+              playSound("prankAvoid");
+            } else {
+              pie.active = false;
+            }
+          }
+        }
+      });
+
+      // Check collisions and passes for ground pranks
+      pranks.forEach((p) => {
+        if (p.resolved) return;
+
+        if (p.type === "locker") {
+          // If Nimbus somehow runs into the locker itself
+          if (rectIntersect(nimbus, p)) {
+            p.resolved = true;
+            p.hit = true;
+            nimbus.score -= 1;
+            pranksHit++;
+            addScorePopup("-1", "#ff5252");
+            playSound("prankHit");
+          }
+          return;
+        }
+
+        const collided = rectIntersect(nimbus, p);
+
+        if (collided && !p.hit) {
+          p.hit = true;
+          p.resolved = true;
+          nimbus.score -= 1;
+          pranksHit++;
+          addScorePopup("-1", "#ff5252");
+          playSound("prankHit");
+
+          if (p.type === "marbles") {
+            // slip effect
+            nimbus.slipTimer = 30;
+            nimbus.canJump = false;
+          } else if (p.type === "banana") {
+            // tiny bounce for fun
+            nimbus.vy = JUMP_FORCE * 0.6;
+            nimbus.onGround = false;
+          }
+        } else if (!collided && typeof p.passX === "number" && nimbus.x > p.passX) {
+          p.resolved = true;
+          nimbus.score += 1;
+          pranksAvoided++;
+          addScorePopup("+1", "#81c784");
+          playSound("prankAvoid");
+        }
+      });
+
+      // Check collisions and passes for airplanes
+      airplanes.forEach((a) => {
+        if (a.resolved) return;
+
+        const collided = rectIntersect(nimbus, a);
+
+        if (collided && !a.hit) {
+          a.hit = true;
+          a.resolved = true;
+          nimbus.score -= 1;
+          pranksHit++;
+          addScorePopup("-1", "#ff5252");
+          playSound("prankHit");
+        } else if (!collided && nimbus.x > a.passX) {
+          a.resolved = true;
+          nimbus.score += 1;
+          pranksAvoided++;
+          addScorePopup("+1", "#81c784");
+          playSound("prankAvoid");
+        }
+      });
+
+      // Check collisions with items
+      items.forEach((item) => {
+        if (item.collected) return;
+        if (rectIntersect(nimbus, item)) {
+          item.collected = true;
+          nimbus.score += item.points;
+          itemsCollected++;
+          addScorePopup("+" + item.points, "#ffeb3b");
+          playSound("item");
+        }
+      });
+
+      // Update score popups
+      for (let i = scorePopups.length - 1; i >= 0; i--) {
+        const sp = scorePopups[i];
+        sp.y += sp.vy;
+        sp.life--;
+        if (sp.life <= 0) {
+          scorePopups.splice(i, 1);
+        }
+      }
+
+      // Check exit door
+      if (nimbus.x + nimbus.width >= EXIT_X + 20) {
+        if (nimbus.score > 0) {
+          gameState = "won";
+          playSound("win");
+        } else {
+          gameState = "lost";
+          playSound("lose");
+        }
+      }
+
+      draw();
+      requestAnimationFrame(update);
+    }
+
+    function rectIntersect(a, b) {
+      return (
+        a.x < b.x + b.width &&
+        a.x + a.width > b.x &&
+        a.y < b.y + b.height &&
+        a.y + a.height > b.y
+      );
+    }
+
+    function drawHallwayBackground() {
+      // Floor
+      ctx.fillStyle = "#cfd8dc";
+      ctx.fillRect(0, FLOOR_Y, WIDTH, HEIGHT - FLOOR_Y);
+
+      // Wall
+      ctx.fillStyle = "#e3f2fd";
+      ctx.fillRect(0, 0, WIDTH, FLOOR_Y);
+
+      // Decorative lockers in the distance (parallax-ish)
+      const lockerWidth = 50;
+      const lockerHeight = 140;
+      for (let x = -100; x < LEVEL_LENGTH + 300; x += 140) {
+        const sx = x - cameraX * 0.5; // slight parallax
+        if (sx + lockerWidth < -100 || sx > WIDTH + 100) continue;
+        ctx.fillStyle = "#42a5f5";
+        ctx.fillRect(sx, FLOOR_Y - lockerHeight, lockerWidth, lockerHeight);
+        ctx.fillStyle = "#1e88e5";
+        ctx.fillRect(sx + 5, FLOOR_Y - lockerHeight + 20, lockerWidth - 10, lockerHeight - 30);
+        ctx.fillStyle = "#fff59d";
+        ctx.fillRect(sx + lockerWidth - 10, FLOOR_Y - lockerHeight + 60, 5, 15);
+      }
+    }
+
+    function drawNimbus() {
+      const nx = nimbus.x - cameraX;
+      const ny = nimbus.y;
+
+      // Nimbus body (chunky)
+      ctx.fillStyle = "#ffb74d"; // orange shirt
+      ctx.fillRect(nx, ny + 10, nimbus.width, nimbus.height - 10);
+
+      // Head
+      ctx.fillStyle = "#ffe0b2";
+      ctx.fillRect(nx + 5, ny - 20, nimbus.width - 10, 30);
+
+      // Hair (dark)
+      ctx.fillStyle = "#4e342e";
+      ctx.fillRect(nx + 5, ny - 20, nimbus.width - 10, 12);
+
+      // Pants
+      ctx.fillStyle = "#5c6bc0";
+      ctx.fillRect(nx, ny + 35, nimbus.width, 25);
+
+      // Shoes
+      ctx.fillStyle = "#263238";
+      ctx.fillRect(nx, ny + nimbus.height - 5, nimbus.width / 2, 5);
+      ctx.fillRect(nx + nimbus.width / 2, ny + nimbus.height - 5, nimbus.width / 2, 5);
+
+      // Simple face
+      ctx.fillStyle = "#000";
+      ctx.fillRect(nx + 10, ny - 10, 3, 3);
+      ctx.fillRect(nx + 23, ny - 10, 3, 3);
+      ctx.fillRect(nx + 15, ny - 2, 6, 2);
+    }
+
+    function drawPranks() {
+      pranks.forEach((prank) => {
+        const px = prank.x - cameraX;
+        if (px + prank.width < 0 || px > WIDTH) return;
+
+        ctx.fillStyle = prank.color;
+        ctx.fillRect(px, prank.y, prank.width, prank.height);
+
+        ctx.fillStyle = "#000";
+        ctx.font = "12px system-ui";
+        ctx.fillText(prank.label, px, prank.y - 4);
+
+        if (prank.type === "locker") {
+          ctx.strokeStyle = "#ffcdd2";
+          ctx.beginPath();
+          ctx.moveTo(px + 10, prank.y + 5);
+          ctx.lineTo(px + prank.width - 10, prank.y + prank.height - 5);
+          ctx.stroke();
+        }
+      });
+    }
+
+    function drawAirplanes() {
+      airplanes.forEach((a) => {
+        const ax = a.x - cameraX;
+        if (ax + a.width < 0 || ax > WIDTH) return;
+
+        ctx.fillStyle = "#b0bec5";
+        ctx.beginPath();
+        ctx.moveTo(ax, a.y);
+        ctx.lineTo(ax + a.width, a.y + a.height / 2);
+        ctx.lineTo(ax, a.y + a.height);
+        ctx.closePath();
+        ctx.fill();
+      });
+    }
+
+    function drawPies() {
+      pies.forEach((pie) => {
+        if (!pie.active) return;
+        const px = pie.x - cameraX;
+        if (px + pie.width < 0 || px > WIDTH) return;
+
+        ctx.fillStyle = "#ffcc80";
+        ctx.fillRect(px, pie.y, pie.width, pie.height);
+        ctx.fillStyle = "#bcaaa4";
+        ctx.fillRect(px, pie.y + pie.height - 4, pie.width, 4);
+      });
+    }
+
+    function drawItems() {
+      items.forEach((item) => {
+        if (item.collected) return;
+
+        const ix = item.x - cameraX;
+        if (ix + item.width < 0 || ix > WIDTH) return;
+
+        ctx.fillStyle = item.color;
+        ctx.fillRect(ix, item.y, item.width, item.height);
+
+        ctx.fillStyle = "#000";
+        ctx.font = "11px system-ui";
+        ctx.fillText(item.label, ix, item.y - 3);
+      });
+    }
+
+    function drawExitDoor() {
+      const doorWidth = 60;
+      const doorHeight = 140;
+      const dx = EXIT_X - cameraX;
+      const dy = FLOOR_Y - doorHeight;
+
+      ctx.fillStyle = "#4caf50";
+      ctx.fillRect(dx, dy, doorWidth, doorHeight);
+
+      ctx.fillStyle = "#a5d6a7";
+      ctx.fillRect(dx + 8, dy + 30, doorWidth - 16, doorHeight - 50);
+
+      ctx.fillStyle = "#fff";
+      ctx.font = "16px system-ui";
+      ctx.fillText("EXIT", dx + 7, dy + 20);
+    }
+
+    function drawHUD() {
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(10, 10, 210, 70);
+
+      ctx.fillStyle = "#fff";
+      ctx.font = "16px system-ui";
+      ctx.fillText("Score: " + nimbus.score, 20, 32);
+
+      ctx.font = "12px system-ui";
+      ctx.fillText("Pranks avoided: " + pranksAvoided, 20, 50);
+      ctx.fillText("Pranks triggered: " + pranksHit, 20, 64);
+      ctx.fillText("Items: " + itemsCollected, 150, 50);
+    }
+
+    function drawScorePopups() {
+      scorePopups.forEach((sp) => {
+        const sx = sp.x - cameraX;
+        ctx.globalAlpha = Math.max(0, sp.life / 40);
+        ctx.fillStyle = sp.color;
+        ctx.font = "16px system-ui";
+        ctx.fillText(sp.text, sx, sp.y);
+        ctx.globalAlpha = 1;
+      });
+    }
+
+    function drawGameStateOverlay() {
+      if (gameState === "playing") return;
+
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+      ctx.fillStyle = "#fff";
+      ctx.textAlign = "center";
+      ctx.font = "28px system-ui";
+
+      if (gameState === "won") {
+        ctx.fillText("You made it, Nimbus!", WIDTH / 2, HEIGHT / 2 - 40);
+        ctx.font = "18px system-ui";
+        ctx.fillText("Final score: " + nimbus.score + " (Victory!)", WIDTH / 2, HEIGHT / 2 - 10);
+      } else if (gameState === "lost") {
+        ctx.fillText("Yikes! The pranks got you.", WIDTH / 2, HEIGHT / 2 - 40);
+        ctx.font = "18px system-ui";
+        ctx.fillText("Final score: " + nimbus.score + " (Try again!)", WIDTH / 2, HEIGHT / 2 - 10);
+      }
+
+      ctx.font = "16px system-ui";
+      ctx.fillText(
+        "Pranks avoided: " + pranksAvoided +
+        "   |   Pranks triggered: " + pranksHit +
+        "   |   Items: " + itemsCollected,
+        WIDTH / 2,
+        HEIGHT / 2 + 25
+      );
+
+      ctx.fillText("Press R to play again • Press M to mute/unmute", WIDTH / 2, HEIGHT / 2 + 55);
+
+      ctx.textAlign = "left";
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+
+      // Background (world-based)
+      ctx.save();
+      ctx.translate(-cameraX, 0);
+      drawHallwayBackground();
+      ctx.restore();
+
+      // World elements
+      ctx.save();
+      ctx.translate(-cameraX, 0);
+      drawPranks();
+      drawAirplanes();
+      drawPies();
+      drawItems();
+      drawExitDoor();
+      ctx.restore();
+
+      drawNimbus();
+      drawHUD();
+      drawScorePopups();
+      drawGameStateOverlay();
+    }
+
+    // Start game loop
+    draw();
+    requestAnimationFrame(update);
+  </script>
+</body>
+</html>
 
